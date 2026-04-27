@@ -6,15 +6,19 @@ SPDX-License-Identifier: MIT
 
 # Documentation Technique de Sécurix
 
-Cf. [documentation de Sécurix](https://github.com/cloud-gouv/securix/blob/main/docs/manual/src/SUMMARY.md).
+- [Documentation officielle de Sécurix](https://github.com/cloud-gouv/securix/blob/main/docs/manual/src/SUMMARY.md).
+- [Recommandations de configuration d'un système GNU/Linux](https://messervices.cyber.gouv.fr/guides/recommandations-de-securite-relatives-un-systeme-gnulinux)
+
+---
 
 ## 1. Vue d'Ensemble
 
-**Sécurix** est une distribution NixOS durcie pour postes de travail sécurisés, construite selon une approche modulaire et déclarative. Développé par la **DINUM** (Direction du Numérique - Ministère français), ce projet vise à créer des postes de travail conformes aux recommandations de l'ANSSI.
+**Sécurix** est une distribution NixOS durcie pour postes de travail sécurisés, construite selon une approche modulaire et déclarative. Développé au sein du département de l'opérateur (OPI) de la **DINUM** (Direction du Numérique - Ministère français), ce projet vise à créer des postes de travail conformes aux recommandations de l'ANSSI, utilisables aussi bien pour l'accès aux environnements de production que pour d'autres usages critiques.
 
-* **Version actuelle :** `v0.11-beta2`
-* **Approche :** Configuration "Infrastructure as Code" intégrale.
-* **Cible :** Postes de travail nécessitant un haut niveau de sécurité et de reproductibilité.
+Grâce à NixOS, chaque poste est entièrement ré-instantiable et adaptable : configuration multi-agent, multi-niveaux, intranet uniquement, avec des équipes et des profils VPN différents.
+
+* **Approche :** Configuration "Infrastructure as Code" intégrale, sans Flakes (choix architectural).
+* **Cible :** Postes de travail nécessitant un haut niveau de sécurité et de reproductibilité, pour des équipes de taille petite à moyenne.
 
 ### Architecture Globale
 
@@ -23,9 +27,9 @@ Cf. [documentation de Sécurix](https://github.com/cloud-gouv/securix/blob/main/
     |                    Architecture Sécurix                    |
     |                                                            |
     |  +-------------+    +-------------+    +-------------+     |
-    |  |  Inventory  |    |   VPN       |    |   Modules   |     |
-    |  | (machines/  |    | (Strongswan)|    |   Sécurix   |     |
-    |  |   users/)   |    |             |    |             |     |
+    |  |  Inventory  |    |  VPN        |    |   Modules   |     |
+    |  | (machines/  |    | (Strongswan |    |   Sécurix   |     |
+    |  |   users/)   |    |  IPSec)     |    |             |     |
     |  +------+------+    +------+------+    +------+------+     |
     |         |                  |                  |            |
     |         +------------------+------------------+            |
@@ -53,58 +57,102 @@ Cf. [documentation de Sécurix](https://github.com/cloud-gouv/securix/blob/main/
 | Fichier/Dossier | Rôle |
 |:---|:---|
 | `default.nix` | Point d'entrée principal (définit lib, pkgs, modules, tests). |
-| `shell.nix` | Environnement de développement (utilisé via `nix-shell`). |
-| `lib/` | Bibliothèque Nix (fonctions de construction des images). |
+| `shell.nix` | Environnement de développement (utilisé via `nix-shell` ou `direnv`). |
+| `.envrc` | Intégration `direnv` pour activer automatiquement le shell Nix. |
+| `lib/` | Bibliothèque Nix : fonctions de construction des images et de lecture de l'inventaire. |
 | `modules/` | Cœur du système (~25 modules NixOS durcis). |
 | `hardware/` | Configurations spécifiques aux modèles de machines supportés. |
-| `pkgs/` | Overlay Nixpkgs et paquets personnalisés. |
-| `npins/` | Gestion des dépendances externes (via `sources.json`). |
-| `community/` | Modules et configurations partagés par la communauté. |
-| `workflows/` | Définition des pipelines CI/CD (GitHub Actions). |
-| `tests/` | Tests d'intégration NixOS. |
+| `pkgs/` | Overlay Nixpkgs et paquets personnalisés (`overlay.nix`). |
+| `npins/` | Gestion des dépendances externes verrouillées (`sources.json`). |
+| `docs/manual/` | Source de la documentation utilisateur (générée via `mdbook`). |
+| `examples/basic/` | Exemple de projet Sécurix minimal pour démarrer. |
+| `community/` | Scripts partagés par la communauté (ex. : inscription sur le registre Grist). |
+| `workflows/` | Scripts de workflow complémentaires (séparés des pipelines `.github/workflows/`). |
+| `tests/` | Tests d'intégration NixOS (exécution en machine virtuelle). |
 
 ### Gestion des Dépendances (`npins`)
 
-Contrairement à d'autres projets utilisant des fichiers JSON multiples, Sécurix utilise `npins` avec un fichier centralisé :
-* `npins/sources.json` : Contient toutes les révisions verrouillées de `nixpkgs`, `lanzaboote`, `disko`, etc.
+Sécurix utilise `npins` avec un fichier centralisé (`npins/sources.json`) plutôt que des Flakes. Ce fichier verrouille les révisions exactes de toutes les dépendances externes, garantissant ainsi une reproductibilité parfaite du build.
 
-* **Avantage :** Garantit la reproductibilité parfaite du build sans utiliser les Flakes (choix architectural).
+| Dépendance | Version | Rôle |
+|:---|:---|:---|
+| `nixpkgs` | `nixos-25.11` | Base du système d'exploitation. |
+| `lanzaboote` | `v0.4.2` | Implémentation du Secure Boot pour NixOS. |
+| `disko` | `v1.9.0` | Partitionnement déclaratif des disques. |
+| `agenix` | `main` (fcdea22) | Intégration `age` pour le chiffrement des secrets. |
+| `git-hooks.nix` | `master` (9364dc0) | Pre-commit hooks (`statix`, `nixfmt-rfc-style`, `reuse`). |
 
 ---
 
-## 3. Configuration Système (`securix.self`)
+## 3. Bibliothèque (`lib/`)
 
-Le module `modules/self.nix` définit l'identité unique de chaque poste. 
+La bibliothèque est le cœur programmatique de Sécurix. Elle expose les fonctions de construction et de lecture de l'inventaire, utilisées dans le `default.nix` d'un projet consommateur.
+
+```nix
+lib = {
+  # Lecture de l'inventaire v1 (fichier plat)
+  readInventory
+
+  # Lecture de l'inventaire v2 (répertoires machines/ et users/ séparés)
+  readInventory2
+
+  # Construction du système installateur (ISO/netboot)
+  buildInstallerSystem
+
+  # Construction d'une image USB bootable
+  buildUSBInstaller
+
+  # Construction d'un installateur via le réseau (iPXE/netboot)
+  buildNetbootInstaller
+
+  # Construction d'une image terminal unique (un poste)
+  mkTerminal
+
+  # Construction de plusieurs images terminaux depuis un inventaire
+  mkTerminals
+
+  # Génération de la documentation mdbook
+  mkDocs
+}
+```
+
+La fonction centrale est **`mkTerminal`** : elle agrège les modules globaux, la configuration matérielle, le module utilisateur spécifique, les profils VPN et les outils de chiffrement (`lanzaboote`, `disko`, `agenix`) pour produire deux artefacts : une image installateur (ISO/USB) et un `system` NixOS compilé.
+
+---
+
+## 4. Configuration Système (`securix.self`)
+
+Le module `modules/self.nix` est central : il définit l'identité unique de chaque poste en faisant le lien entre l'inventaire global et la machine locale.
 
 ```nix
 {
   securix.self = {
 
-    # Type de description (user/machine/both)
+    # Type de description du fichier (user / machine / both)
     selfDescriptionType = "both";
-    
-    # Disque principal cible
+
+    # Disque principal cible pour l'installation
     mainDisk = "/dev/nvme0n1";
-    
-    # Édition personnalisée (ex: "ministere-interieur")
+
+    # Édition personnalisée (ex: "ministere-interieur", "equipe-ops")
     edition = "acme-corp";
-    
-    # Configuration utilisateur
+
+    # Configuration de l'utilisateur du poste
     user = {
       email = "prenom.nom@domain.fr";
-      username = "pnom";           # Dérivé automatiquement
+      username = "pnom";           # Dérivé automatiquement depuis l'e-mail
       hashedPassword = "...";      # Hash bcrypt ($2b$...)
-      u2f_keys = [ "..." ];        # Identifiants de clés U2F/FIDO2
-      bit = 1;                     # Identifiant IP pour le VPN
+      u2f_keys = [ "..." ];        # Identifiants des clés U2F/FIDO2 enregistrées
+      bit = 1;                     # Identifiant numérique pour l'adressage VPN
       allowedVPNs = [ "vpn-id-1" ];
       teams = [ "devops" ];
     };
-    
-    # Configuration machine
+
+    # Configuration de la machine physique
     machine = {
       serialNumber = "SN123456789";
       inventoryId = 101;
-      hardwareSKU = "t14g6";       # Référence au modèle dans hardware/
+      hardwareSKU = "t14g6";       # Référence au profil dans hardware/
       users = [ "pnom" ];          # Liste des utilisateurs autorisés sur ce poste
     };
   };
@@ -113,243 +161,322 @@ Le module `modules/self.nix` définit l'identité unique de chaque poste.
 
 ---
 
-## 4. Architecture de Sécurité
+## 5. Architecture de Sécurité
 
-### Couches de Défense
+### Couches de Défense en Profondeur
 
 | Niveau | Composant | Description |
 |:---|:---|:---|
-| **Matériel** | TPM 2.0 / FIDO2 | Stockage des clés et authentification forte. |
-| **Boot** | Lanzaboote | Gestion du Secure Boot (clés PK/KEK/db) sans GRUB. |
-| **Noyau** | Linux Hardened | Configuration conforme aux recommandations ANSSI. |
-| **Réseau** | **Strongswan** | VPN IPSec robuste pour les flux nomades. |
-| **Secrets** | Agenix | Chiffrement des secrets système via `age` et clés SSH. |
-| **Audit** | Auditd | Traçabilité complète des actions privilégiées. |
+| **Matériel** | TPM 2.0 / FIDO2 | Stockage des clés et authentification forte, la clé privée SSH ne quitte jamais le matériel. |
+| **Boot** | Lanzaboote | Gestion du Secure Boot (clés PK/KEK/db) sans GRUB, enrollment via `sbctl`. |
+| **Chiffrement au repos** | LUKS (via `disko`) | Déchiffrement du disque possible via une clé FIDO2 ; une clé de secours est générée à l'installation. |
+| **Noyau** | Linux Hardened | Configuration conforme aux recommandations ANSSI (sysctl, désactivation de protocoles non sûrs). |
+| **Authentification** | PAM + U2F/Yubikey | Connexion au poste en FIDO2 ; le mot de passe n'est qu'un mode de secours. |
+| **Réseau** | Strongswan | VPN IPSec/IKEv2 robuste pour les accès nomades aux ressources internes. |
+| **Secrets** | Agenix (`age`) | Chiffrement des secrets système avec les clés SSH de l'hôte pour la gestion décentralisée. |
+| **Audit** | Auditd | Traçabilité complète et granulaire des actions privilégiées et des accès sensibles. |
+| **Observabilité** | `o11y` | Envoi des traces et métriques vers un puits de logs centralisé. |
 
 ### Flux d'Installation Automatique (`autoinstall`)
 
-1.  **Wipe & Partitionnement :** Effacement sécurisé et application du schéma via `disko`.
-2.  **Génération des clés :** Création locale des clés Secure Boot, clés d'hôte SSH et identifiants `age`.
-3.  **Installation NixOS :** Déploiement du système dans le `chroot` cible.
-4.  **Enrollment Secure Boot :** Enregistrement des clés dans le firmware UEFI via `sbctl`.
-5.  **Provisionnement Strongswan :** Configuration des profils VPN IPSec.
+```text
+autoinstall-terminal
+  +-> 1. Wipe (wipefs, effacement sécurisé)
+  +-> 2. Partitionnement et chiffrement (disko / LUKS)
+  +-> 3. Montage des partitions
+  +-> 4. Génération des clés (Secure Boot, clé d'hôte SSH, identité age)
+  +-> 5. Installation NixOS (nixos-install dans le chroot)
+  +-> 6. Enrollment Secure Boot (sbctl enroll-keys)
+  +-> 7. Provisionnement VPN (profils Strongswan)
+  +-> 8. Redémarrage automatique
+```
 
 ---
 
-## 5. Guide de Développement
+## 6. Guide de Développement
+
+### Prérequis
+
+* Nix installé sur le poste de développement (Linux ou macOS).
+* `direnv` recommandé pour activer automatiquement le shell au `cd` dans le projet.
 
 ### Entrer dans l'environnement
 
-> Note : le projet n'utilise pas de Flakes pour le développement mais un shell nix.
-
-Utilisez :
+Le projet n'utilise pas de Flakes. L'environnement de développement est défini dans `shell.nix`.
 
 ```bash
-# Entrer dans le shell de développement
-# Une fois dans le shell, les outils suivants sont disponibles :
-# npins, agenix, sbctl, mdbook
+# Option 1 : activation manuelle
 nix-shell
+
+# Option 2 : activation automatique via direnv (recommandé)
+# À configurer une seule fois après le clonage du dépôt :
+direnv allow
 ```
 
-### Construction des cibles
+Une fois dans le shell, les outils suivants sont disponibles : `npins`, `agenix`, `sbctl`, `mdbook`, `statix`, `nixfmt-rfc-style`.
 
-Les cibles sont définies dans le `default.nix` à la racine.
+### Construction des Cibles
+
+Les cibles de build sont définies dans le `default.nix` à la racine du projet.
 
 ```bash
+# Construire toutes les images terminaux
+nix-build -A terminals
+
 # Lancer les tests d'intégration en machine virtuelle
 nix-build -A tests
+
+# Générer la documentation (résultat dans ./result/)
+nix-build -A docs
+```
+
+### Mettre à Jour une Dépendance
+
+Pour mettre à jour une dépendance verrouillée dans `npins/sources.json` :
+
+```bash
+# Mettre à jour une dépendance spécifique
+npins update nixpkgs
+
+# Mettre à jour toutes les dépendances
+npins update
 ```
 
 ---
 
-## 6. Dépannage et FAQ
+## 7. Fonctionnalités en Développement
+
+Ces fonctionnalités sont planifiées et listées par priorité dans le README officiel.
+
+**Renforcement de la sécurité**
+
+Application complémentaire des recommandations ANSSI pour un durcissement plus poussé du système GNU/Linux. Ajout d'une configuration de puits de traces pour l'envoi centralisé des activités Sécurix.
+
+**Onboarding automatisé ("Phone Home")**
+
+Mise en place d'un serveur de provisionnement permettant, lors du premier démarrage d'un nouveau poste, d'enregistrer automatiquement sa clé SSH TPM2 dans le dépôt d'infrastructure et de lui accorder l'autorisation de déchiffrer ses secrets via `age` (ou via Vault dans une intégration future).
+
+**Gestion et rotation des clés Secure Boot**
+
+Support de la rotation des clés Secure Boot avec TPM2 pour garantir la continuité d'un niveau de sécurité élevé sur le long terme.
+
+---
+
+## 8. Dépannage et FAQ
 
 ### Erreurs de permissions lors de l'édition des secrets
 
 Les secrets sont gérés par `agenix`. Pour les modifier, votre clé SSH doit être déclarée dans le fichier `secrets.nix` du projet.
 
 ```bash
-# Commande correcte
+# Syntaxe correcte pour éditer un secret
 agenix -e secrets/vpn-password.age
 ```
 
 ### Échec de l'enrôlement Secure Boot
 
-Si `sbctl enroll-keys` échoue, vérifiez que le BIOS est bien en "Setup Mode" (les clés d'usine doivent être effacées au préalable).
+Si `sbctl enroll-keys` échoue, vérifiez que le firmware UEFI est bien en mode "Setup Mode" (les clés d'usine constructeur doivent être effacées au préalable depuis le BIOS).
 
 ```bash
-sbctl status  # Vérifiez 'Setup Mode: Enabled'
+# Vérifier l'état du Secure Boot
+sbctl status
+# Le champ 'Setup Mode' doit afficher : Enabled
 ```
 
 ### Problèmes de connexion VPN IPSec
 
-Sécurix utilise **Strongswan**. Vérifiez les journaux du service :
+Sécurix utilise **Strongswan** pour les tunnels IPSec/IKEv2. Pour diagnostiquer une connexion défaillante :
 
 ```bash
+# Suivre les journaux du service Strongswan en temps réel
 journalctl -u strongswan-swanctl -f
 ```
 
-### Clé d'hôte SSH pour le chiffrement age
+### Clé d'hôte SSH et chiffrement `age`
 
-Si vous devez régénérer une identité pour `age` basée sur la clé de l'hôte :
+`agenix` utilise la clé d'hôte SSH de la machine (`/etc/ssh/ssh_host_ed25519_key`) comme identité `age` pour déchiffrer les secrets. La clé publique correspondante doit être déclarée dans `secrets.nix`. Ne pas régénérer manuellement cette clé sans mettre à jour les secrets chiffrés avec l'ancienne, au risque de rendre le système inaccessible.
 
 ```bash
-# Ne pas utiliser age-keygen directement sur une clé privée SSH existante sans précaution.
-# Utilisez la clé publique pour chiffrer et la clé privée machine pour déchiffrer via agenix.
-ssh-keyscan localhost > /etc/ssh/ssh_host_ed25519_key.pub
+# Afficher la clé publique de l'hôte (à référencer dans secrets.nix)
+cat /etc/ssh/ssh_host_ed25519_key.pub
+```
+
+### Utilisation du cache binaire (build trop long)
+
+Pour éviter de recompiler l'ensemble du système depuis les sources :
+
+```bash
+# Ajouter le cache de la communauté NixOS
+cachix use nix-community
 ```
 
 ---
 
-## 7. Matériel Supporté
+## 9. Matériel Supporté
 
-Le dossier `hardware/` contient des optimisations spécifiques (firmwares, kernel modules) pour :
+Le dossier `hardware/` contient des profils d'optimisation spécifiques (firmwares, modules noyau, pilotes) pour les modèles suivants :
 
-* **Lenovo :** X280, T14 Gen 6, E14 Gen 7.
-* **HP :** EliteBook 645 G11.
-* **Dell :** Latitude 5340.
-* **Fujitsu :** Lifebook U9-15.
-* **Dynabook :** Portega X30L-G.
+| SKU | Modèle |
+|:---|:---|
+| `x280` | Lenovo ThinkPad X280 |
+| `t14g6` | Lenovo ThinkPad T14 Gen 6 |
+| `e14-g7` | Lenovo ThinkPad E14 Gen 7 |
+| `elitebook645g11` | HP EliteBook 645 G11 |
+| `latitude5340` | Dell Latitude 5340 |
+| `x9-15` | Fujitsu Lifebook U9-15 |
+| `x13-20ug` | Dynabook Portégé X30L-G |
 
 ---
 
-## 8. Liste des Modules
+## 10. Liste des Modules
 
-Le cœur de Sécurix repose sur des modules NixOS spécialisés. Ils sont organisés pour appliquer une politique de sécurité de type "défense en profondeur", inspirée des standards de l'ANSSI.
+Le cœur de Sécurix repose sur des modules NixOS spécialisés, organisés selon une politique de "défense en profondeur" inspirée des standards de l'ANSSI.
 
-### Modules de Sécurité & Conformité
+### Sécurité & Conformité
 
-**`anssi/`** -> Durcissement général et conformité.
+**`anssi/`** — Durcissement général et conformité ANSSI.
 
-Ce module applique les recommandations de sécurité de l'ANSSI pour les systèmes GNU/Linux. Il configure les paramètres du noyau (sysctl), restreint certains accès système et désactive les protocoles ou fonctionnalités jugés peu sûrs.
+Ce module applique les recommandations de sécurité de l'ANSSI pour les systèmes GNU/Linux. Il configure les paramètres du noyau via `sysctl`, restreint certains appels système et désactive les protocoles ou fonctionnalités jugés non sûrs. Certains paramètres peuvent être désactivés selon les besoins opérationnels.
 
-**`auditd/`** -> Traçabilité et journalisation des événements système.
+**`auditd/`** — Traçabilité et journalisation des événements système.
 
-Gère la configuration du démon d'audit Linux (`auditd`). Il permet de tracer de manière granulaire les accès aux fichiers sensibles, les appels système critiques et les élévations de privilèges.
+Configure le démon d'audit Linux (`auditd`). Permet de tracer de manière granulaire les accès aux fichiers sensibles, les appels système critiques et les élévations de privilèges.
 
-**`pam/`** -> Authentification renforcée (Pluggable Authentication Modules).
+**`pam/`** — Authentification renforcée (Pluggable Authentication Modules).
 
-Configure la brique d'authentification Linux pour forcer l'usage du MFA (authentification multifacteur). Il s'interface notamment avec les clés matérielles Yubikey pour interdire l'accès par simple mot de passe.
+Configure la brique d'authentification Linux pour imposer le MFA (authentification multifacteur). S'interface avec les clés matérielles Yubikey pour interdire l'accès par simple mot de passe.
 
-**`security-keys/`** -> Support des clés FIDO2 / U2F.
+**`security-keys/`** — Support des clés FIDO2 / U2F.
 
-Fournit les règles système (comme les règles `udev`) nécessaires pour reconnaître et interagir nativement avec des clés de sécurité matérielles.
+Fournit les règles `udev` nécessaires pour reconnaître et interagir nativement avec les clés de sécurité matérielles.
 
-**`ssh-tpm-agent/`** -> Agent SSH adossé à la puce TPM 2.0.
+**`ssh-tpm-agent/`** — Agent SSH adossé à la puce TPM 2.0.
 
-Gère l'agent SSH capable de générer et d'utiliser des clés d'authentification scellées dans le composant matériel TPM 2.0 de la machine. La clé privée ne quitte ainsi jamais le matériel.
+Gère l'agent SSH capable de générer et d'utiliser des clés d'authentification scellées dans le composant matériel TPM 2.0. La clé privée ne quitte ainsi jamais la machine.
 
 ---
 
 ### Gestion des Utilisateurs & Accès
 
-**`admins/`** -> Gestion des comptes administrateurs locaux.
+**`admins/`** — Comptes administrateurs locaux.
 
-Définit la liste et les droits des utilisateurs locaux ayant l'autorisation d'élever leurs privilèges (via `sudo`) pour effectuer de la maintenance.
+Définit la liste et les droits des utilisateurs locaux autorisés à élever leurs privilèges via `sudo` pour effectuer de la maintenance.
 
-**`authorized-users/`** -> Gestion des utilisateurs réguliers autorisés.
+**`authorized-users/`** — Utilisateurs réguliers autorisés.
 
-Déclare les utilisateurs légitimes du poste de travail et lie leurs identités aux clés de chiffrement et d'authentification configurées.
+Déclare les utilisateurs légitimes du poste et lie leurs identités aux clés de chiffrement et d'authentification configurées.
 
-**`superadmins/`** -> Comptes de secours ou d'administration globale.
+**`superadmins/`** — Comptes de secours ou d'administration centrale.
 
-Réserve des accès spécifiques et hautement surveillés pour les administrateurs centraux du parc informatique en cas de besoin de remédiation lourde.
+Réserve des accès spécifiques et hautement surveillés pour les administrateurs du parc informatique, à utiliser en cas de remédiation lourde.
 
 ---
 
 ### Système de Fichiers & Amorçage
 
-**`bootloader/`** -> Gestion du démarrage sécurisé.
+**`bootloader/`** — Démarrage sécurisé.
 
-Configure l'amorçage de la machine. C'est ici que l'on retrouve l'intégration de `lanzaboote` pour l'implémentation d'un véritable UEFI Secure Boot.
+Configure l'amorçage de la machine. Intègre `lanzaboote` pour un UEFI Secure Boot véritable, sans GRUB.
 
-**`disko/`** -> Partitionnement déclaratif.
+**`disko/`** — Partitionnement déclaratif.
 
-Utilise l'outil `disko` pour formater et partitionner le disque. Il s'assure que le chiffrement au repos (LUKS) est correctement mis en place sur les partitions de données.
+Utilise l'outil `disko` pour formater et partitionner le disque. S'assure que le chiffrement au repos (LUKS) est correctement mis en place sur les partitions de données.
 
-**`filesystems/`** -> Montage et sécurité des partitions.
+**`filesystems/`** — Montage et sécurité des partitions.
 
-Définit les points de montage et applique des options de sécurité strictes sur ces derniers (comme l'interdiction d'exécuter des binaires sur certaines partitions avec `noexec`).
+Définit les points de montage et applique des options de sécurité strictes (comme l'option `noexec` pour interdire l'exécution de binaires sur certaines partitions).
 
 ---
 
 ### Réseau & Connectivité
 
-**`bastion/`** -> Configuration des accès via rebond.
+**`bastion/`** — Accès via rebond SSH.
 
-Paramètre les accès SSH à travers un bastion d'administration pour respecter les schémas d'architecture réseau sécurisés.
+Paramètre les accès SSH à travers un bastion d'administration, conformément aux schémas d'architecture réseau sécurisés préconisés par l'ANSSI.
 
-**`http-proxy/`** -> Sortie réseau via un mandataire.
+**`http-proxy/`** — Sortie réseau via mandataire.
 
-Configure les variables d'environnement globales nécessaires pour forcer le trafic HTTP/HTTPS à transiter par un proxy d'entreprise.
+Configure les variables d'environnement globales pour forcer le trafic HTTP/HTTPS à transiter par un proxy d'entreprise.
 
-**`known-hosts/`** -> Gestion des identités de serveurs SSH.
+**`known-hosts/`** — Identités de serveurs SSH de confiance.
 
-Pré-remplit les clés publiques des serveurs distants de confiance pour éviter les attaques de type *Man-in-the-Middle* lors des connexions des utilisateurs.
+Pré-remplit les clés publiques des serveurs distants connus pour prévenir les attaques de type *man-in-the-middle* lors des connexions.
 
-**`networking/`** -> Pile réseau et pare-feu.
+**`networking/`** — Pile réseau et pare-feu.
 
-Gère le nom de la machine, les DNS, et définit des règles de pare-feu restrictives pour n'autoriser que les flux strictement nécessaires.
+Gère le nom de la machine, les DNS et définit des règles de pare-feu restrictives pour n'autoriser que les flux strictement nécessaires.
 
-**`vpn/`** -> Tunnelisation sécurisée.
+**`vpn/`** — Tunnelisation sécurisée.
 
-Met en place les tunnels VPN d'entreprise en s'appuyant sur Strongswan pour assurer des liaisons IPsec chiffrées aux utilisateurs nomades.
+Met en place les tunnels VPN IPSec/IKEv2 d'entreprise via Strongswan pour les utilisateurs nomades.
 
 ---
 
 ### Administration & Identité
 
-**`self.nix`** -> Carte d'identité de la machine (Module crucial).
+**`self.nix`** — Identité de la machine *(module central)*.
 
-Ce module fait la liaison entre l'inventaire global et la machine locale. Il récupère les spécificités de l'utilisateur (e-mail, hash de mot de passe, clé U2F) et de la machine (numéro de série, modèle matériel) pour forger la configuration finale.
+Fait le lien entre l'inventaire global et la machine locale. Récupère les spécificités de l'utilisateur (e-mail, hash de mot de passe, clé U2F) et de la machine (numéro de série, modèle matériel) pour forger la configuration finale.
 
-**`distribution/`** -> Paramètres fondamentaux de l'OS.
+**`distribution/`** — Paramètres fondamentaux de l'OS.
 
-Règle les paramètres globaux propres à NixOS (comme la version de l'état du système pour assurer la compatibilité ascendante).
+Règle les paramètres globaux NixOS, notamment la version de l'état du système (`stateVersion`) pour assurer la compatibilité ascendante lors des mises à jour.
 
-**`package-manager/`** -> Configuration du binaire `nix`.
+**`package-manager/`** — Configuration du gestionnaire de paquets Nix.
 
-Restreint l'utilisation du gestionnaire de paquets Nix pour s'assurer que seuls les dépôts et caches binaires autorisés par l'organisation sont utilisés.
+Restreint l'utilisation de Nix aux seuls dépôts et caches binaires autorisés par l'organisation.
 
-**`pki/`** -> Gestion des certificats d'autorité (CA).
+**`pki/`** — Certificats d'autorité (CA).
 
-Permet d'injecter des certificats racines d'entreprise dans le magasin de confiance de l'OS pour déchiffrer les flux (si nécessaire) ou s'authentifier auprès de briques internes.
+Injecte les certificats racines d'entreprise dans le magasin de confiance de l'OS, nécessaires pour l'inspection TLS ou l'authentification auprès des briques internes.
 
-**`spiffe/`** -> Identité applicative dynamique.
+**`spiffe/`** — Identités applicatives dynamiques.
 
-Apporte le support du framework SPIFFE pour délivrer des identités cryptographiques automatiques à courte durée de vie aux services tournant sur le poste.
+Apporte le support du framework SPIFFE pour délivrer des identités cryptographiques à courte durée de vie aux services tournant sur le poste.
 
-**`updates/`** -> Mises à jour automatiques.
+**`o11y/`** — Observabilité.
 
-Planifie et automatise la récupération et l'application des nouvelles versions de la configuration système sans action requise de l'utilisateur.
+Configure l'envoi des traces et métriques du poste vers un puits de logs centralisé, permettant une supervision homogène du parc.
+
+**`updates/`** — Mises à jour automatiques.
+
+Planifie et automatise la récupération et l'application des nouvelles versions de la configuration système.
 
 ---
 
 ### Interface & Ergonomie
 
-**`console/`** -> Configuration du terminal TTY natif.
+**`console/`** — Terminal TTY natif.
 
-Gère la langue du clavier virtuel (AZERTY par défaut) et les polices d'affichage de la console hors interface graphique.
+Gère la langue du clavier (AZERTY par défaut) et les polices d'affichage de la console hors interface graphique.
 
-**`graphical-interface/`** -> Bureau et affichage.
+**`graphical-interface/`** — Bureau et affichage.
 
-Lance et sécurise le serveur graphique ainsi que le gestionnaire de fenêtres du poste de travail.
+Lance et sécurise le serveur graphique ainsi que le gestionnaire de fenêtres du poste. Inclut un thème KDE de base.
 
-**`journal/`** -> Gestion des logs systemd.
+**`journal/`** — Logs systemd.
 
-Configure la taille maximale et la persistance des journaux locaux pour éviter les dénis de service par saturation de disque.
+Configure la taille maximale et la persistance des journaux locaux pour éviter les dénis de service par saturation du disque.
 
-**`power-saving/`** -> Optimisation de la batterie.
+**`power-saving/`** — Gestion de l'énergie.
 
-Applique des profils d'économie d'énergie pour maximiser l'autonomie des ordinateurs portables sans trop dégrader les performances.
+Applique des profils d'économie d'énergie pour maximiser l'autonomie des ordinateurs portables.
 
-**`shells/`** -> Configuration des interpréteurs de commandes.
+**`shells/`** — Interpréteurs de commandes.
 
-Définit les interpréteurs autorisés (comme Zsh) et les munit d'un prompt ainsi que de raccourcis sécurisés pour l'utilisateur.
+Définit les interpréteurs autorisés (Zsh par défaut) et les configure avec un prompt et des raccourcis adaptés.
 
-**`tools/`** -> Utilitaires d'administration.
+**`tools/`** — Utilitaires d'administration.
 
-Embarque des petits utilitaires indispensables à la vie d'un administrateur système ou d'un utilisateur au quotidien (curls, htop, etc.).
+Embarque les utilitaires courants pour les administrateurs et les utilisateurs, dont `qrencode` pour générer des QR codes (utile pour l'enrôlement FIDO2).
 
 ---
-*Dernière mise à jour : Avril 2026 - Version v0.11-beta2*
+
+## 11. Références
+
+* [Recommandations ANSSI — Systèmes GNU/Linux](https://cyber.gouv.fr/publications/recommandations-de-securite-relatives-un-systeme-gnulinux)
+* [Recommandations ANSSI — Administration sécurisée des SI](https://cyber.gouv.fr/publications/recommandations-relatives-ladministration-securisee-des-si)
+* [Dépôt GitHub — cloud-gouv/securix](https://github.com/cloud-gouv/securix)
+
+---
+*Dernière mise à jour : Avril 2026 — Version `v0.11-beta2`*
