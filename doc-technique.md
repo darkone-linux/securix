@@ -42,8 +42,8 @@ Grâce à NixOS, chaque poste est entièrement ré-instantiable et adaptable : c
     |         +------------------+-------------------+           |
     |         |                  |                   |           |
     |  +------+--------+  +------+-------+  +--------+------+    |
-    |  |  Installateur |  |  Netboot     |  |   Image       |    |
-    |  |  (USB/ISO)    |  | Installateur |  |   Terminal    |    |
+    |  |  Installateur |  |  Netboot     |  |   Système     |    |
+    |  |  (USB/ISO)    |  | Installateur |  |   NixOS       |    |
     |  +---------------+  +--------------+  +---------------+    |
     +------------------------------------------------------------+
 ```
@@ -90,33 +90,41 @@ La bibliothèque est le cœur programmatique de Sécurix. Elle expose les foncti
 
 ```nix
 lib = {
-  # Lecture de l'inventaire v1 (fichier plat)
-  readInventory
+  # Lecture de l'inventaire v1 (répertoire plat de fichiers .nix)
+  readInventory             # readInventory dir
 
   # Lecture de l'inventaire v2 (répertoires machines/ et users/ séparés)
-  readInventory2
+  readInventory2            # readInventory2 { dir }
 
-  # Construction du système installateur (ISO/netboot)
+  # Construction du système installateur de bas niveau
   buildInstallerSystem
 
-  # Construction d'une image USB bootable
-  buildUSBInstaller
+  # Construction d'une image USB bootable (ISO)
+  buildUSBInstaller         # → ISO flashable sur clé USB
+  buildUSBInstallerISO      # → retourne directement le chemin de l'image ISO
 
   # Construction d'un installateur via le réseau (iPXE/netboot)
   buildNetbootInstaller
 
   # Construction d'une image terminal unique (un poste)
-  mkTerminal
+  mkTerminal                # → { modules, partitioningModules, installer, system }
 
   # Construction de plusieurs images terminaux depuis un inventaire
-  mkTerminals
+  mkTerminals               # mkTerminals { users, vpn-profiles, edition } baseSystem
 
-  # Génération de la documentation mdbook
-  mkDocs
+  # Génération de la documentation
+  mkDocs                    # mkDocs { users, vpn-profiles, terminals } → { bastions, inventory }
 }
 ```
 
-La fonction centrale est **`mkTerminal`** : elle agrège les modules globaux, la configuration matérielle, le module utilisateur spécifique, les profils VPN et les outils de chiffrement (`lanzaboote`, `disko`, `agenix`) pour produire deux artefacts : une image installateur (ISO/USB) et un `system` NixOS compilé.
+La fonction centrale est **`mkTerminal`** : elle agrège les modules globaux, la configuration matérielle, le module utilisateur spécifique, les profils VPN et les outils de chiffrement (`lanzaboote`, `disko`, `agenix`) pour produire quatre artefacts :
+
+| Clé | Description |
+|:---|:---|
+| `modules` | Liste complète des modules NixOS du terminal (utilisable dans d'autres contextes). |
+| `partitioningModules` | Sous-ensemble de modules pour le partitionnement seul (disko + filesystems + self + pam). |
+| `installer` | Image ISO bootable générée par `buildUSBInstallerISO`. |
+| `system` | Système NixOS évalué (`pkgs.nixos allModules`), donnant accès à `system.config`. |
 
 ---
 
@@ -181,15 +189,18 @@ Le module `modules/self.nix` est central : il définit l'identité unique de cha
 
 ```text
 autoinstall-terminal
-  +-> 1. Wipe (wipefs, effacement sécurisé)
+  +-> 1. Effacement sécurisé du disque (wipefs + dd zero)
   +-> 2. Partitionnement et chiffrement (disko / LUKS)
-  +-> 3. Montage des partitions
-  +-> 4. Génération des clés (Secure Boot, clé d'hôte SSH, identité age)
-  +-> 5. Installation NixOS (nixos-install dans le chroot)
+  +-> 3. Montage et vérification de /mnt (doit être sur disque persistant)
+  +-> 4. Génération des clés Secure Boot (sbctl create-keys)
+  +-> 5. Installation NixOS (nixos-install)
   +-> 6. Enrollment Secure Boot (sbctl enroll-keys)
-  +-> 7. Provisionnement VPN (profils Strongswan)
-  +-> 8. Redémarrage automatique
+  +-> 7. Provisionnement clés TPM2 (si /dev/tpm0 disponible, via ssh-tpm-keygen -A)
+  +-> 8. Provisionnement identité age (clé d'hôte SSH → déchiffrement des secrets)
+  +-> 9. Script post-installation personnalisé (optionnel)
 ```
+
+Voir la [section 8](#8-installation-de-nixos-avec-sécurix) pour le détail du processus interactif.
 
 ---
 
@@ -213,22 +224,86 @@ nix-shell
 direnv allow
 ```
 
-Une fois dans le shell, les outils suivants sont disponibles : `npins`, `agenix`, `sbctl`, `mdbook`, `statix`, `nixfmt-rfc-style`.
+Une fois dans le shell, les outils suivants sont disponibles : `npins`, `agenix`, `mdbook`, `statix`, `nixfmt-rfc-style`, `reuse`.
 
-### Construction des Cibles
+### Tester les Modifications
 
-Les cibles de build sont définies dans le `default.nix` à la racine du projet.
+Pour valider vos changements, utilisez les tests d'intégration NixOS :
 
 ```bash
-# Construire toutes les images terminaux
-nix-build -A terminals
-
 # Lancer les tests d'intégration en machine virtuelle
 nix-build -A tests
-
-# Générer la documentation (résultat dans ./result/)
-nix-build -A docs
 ```
+
+### Workflow de Développement
+
+Le dépôt Sécurix est une bibliothèque Nix (toolkit) destinée à être importée par un projet consommateur. Pour développer sur Sécurix lui-même :
+
+1. **Modifier les modules** : les modules NixOS sont dans `modules/`. Chaque module est indépendant et configure un aspect spécifique du système.
+
+2. **Tester les modifications** : utilisez les tests d'intégration pour valider vos changements :
+   ```bash
+   # Lancer tous les tests en VM
+   nix-build -A tests
+
+   # Tester une configuration minimale
+   nix-build -A tests.minimal
+   ```
+
+3. **Vérifier le style de code** : les hooks pre-commit (statix, nixfmt-rfc-style, reuse) sont exécutés avant chaque push.
+
+### Structure d'un Projet Consommateur
+
+Pour utiliser Sécurix, créez un projet avec la structure suivante :
+
+```
+mon-projet/
+├── default.nix      # Point d'entrée qui importe securix
+├── inventory/       # Inventaire des machines et utilisateurs
+│   ├── machines/   # Configurations des postes
+│   └── users/      # Configurations des utilisateurs
+├── vpn-profiles.nix # Profils VPN
+└── npins/          # Dépendances (incluant securix)
+```
+
+Exemple de `default.nix` consommateur (inspiré de `examples/basic/`) :
+
+```nix
+{
+  sources ? import ./npins,
+  pkgs ? import sources.nixpkgs { },
+  securixSrc ? sources.securix,
+}:
+let
+  securix = import securixSrc {
+    edition = "mon-equipe";
+    defaultTags = [ "mon-equipe" ];
+    inherit pkgs;
+  };
+  inherit (pkgs) lib;
+in
+rec {
+  users = securix.lib.readInventory ./inventory;
+  vpn-profiles = import ./vpn-profiles { inherit lib; };
+  terminals = securix.lib.mkTerminals {
+    inherit users vpn-profiles;
+    edition = "mon-equipe";
+  } (
+    { lib, ... }: {
+      securix = {
+        users.allowAnyOperator = true;
+        graphical-interface.enable = true;
+        vpn.enable = true;
+        ssh.tpm-agent.hostKeys = true;
+      };
+    }
+  );
+  docs = securix.lib.mkDocs { inherit users terminals vpn-profiles; };
+}
+```
+
+> `mkTerminals` est une fonction curryfiée : elle prend d'abord un ensemble `{users, vpn-profiles, edition}`, puis un module NixOS de base (`baseSystem`) appliqué à tous les terminaux.
+> `mkDocs` retourne `{ bastions, inventory }` : deux fichiers texte dans le store Nix contenant les flux réseau et l'inventaire des postes au format Markdown.
 
 ### Mettre à Jour une Dépendance
 
@@ -244,7 +319,121 @@ npins update
 
 ---
 
-## 7. Fonctionnalités en Développement
+## 7. Création d'une Image
+
+### Avec un Projet Consommateur
+
+La méthode recommandée est d'utiliser un projet consommateur avec un inventaire (voir [Structure d'un Projet Consommateur](#structure-dun-projet-consommateur)).
+
+```bash
+# Depuis le projet consommateur, construire toutes les images terminaux
+nix-build -A terminals
+
+# Construire l'image ISO pour un terminal spécifique
+nix-build -A terminals.nom-du-terminal.installer
+```
+
+Le résultat est une image ISO (`result/iso/*.iso`) que vous pouvez flasher sur une clé USB.
+
+### Création Manuelle d'une Image (Test/Sans Inventaire)
+
+Pour tester rapidement sans inventaire complet, utilisez `mkTerminal` directement :
+
+```nix
+# test-image.nix
+{ pkgs, lib }:
+let
+  securix = import ./. {
+    edition = "test";
+    pkgs = import <nixpkgs> { };
+  };
+  terminal = securix.lib.mkTerminal {
+    name = "test";
+    userSpecificModule = { };
+    vpnProfiles = { };
+    modules = [
+      {
+        securix = {
+          graphical-interface.variant = "sway";
+          self = {
+            mainDisk = "/dev/nvme0n1";
+            machine = {
+              hardwareSKU = "x280";
+              serialNumber = "TEST001";
+            };
+          };
+        };
+      }
+    ];
+  };
+in
+terminal.installer
+```
+
+Puis construisez avec :
+```bash
+nix-build test-image.nix
+```
+
+### Flashage de l'Image sur une Clé USB
+
+```bash
+# Identifier la clé USB (ex: /dev/sda)
+lsblk
+
+# Flasher l'ISO (remplacez le chemin et le périphérique)
+sudo dd if=./result/iso/securix-*.iso of=/dev/sda bs=4M status=progress oflag=sync
+```
+
+---
+
+## 8. Installation de NixOS avec Sécurix
+
+### Préparation
+
+1. **Démarrer sur la clé USB** contenant l'image Sécurix.
+2. Le système démarre en mode "live installer" et se connecte automatiquement en root.
+
+### Processus d'Installation Automatisé
+
+Lancez le script d'installation automatique :
+
+```bash
+autoinstall-terminal
+```
+
+Ce script effectue les étapes suivantes :
+
+```text
+autoinstall-terminal
+  +-> 1. Effacement sécurisé du disque (wipefs + dd zero)
+  +-> 2. Partitionnement et chiffrement (disko / LUKS)
+  +-> 3. Montage et vérification de /mnt (disque persistant requis)
+  +-> 4. Génération des clés Secure Boot (sbctl create-keys)
+  +-> 5. Installation NixOS (nixos-install)
+  +-> 6. Enrollment Secure Boot (sbctl enroll-keys)
+  +-> 7. Provisionnement clés TPM2 (si /dev/tpm0 présent)
+  +-> 8. Provisionnement identité age (clé d'hôte SSH)
+```
+
+### Post-Installation
+
+Après le redémarrage :
+
+1. **Connexion** : Utilisez votre clé FIDO2/U2F ou le mot de passe de secours.
+2. **Configuration VPN** : Les profils Strongswan sont pré-configurés selon l'inventaire.
+3. **Vérification** :
+   ```bash
+   # Vérifier le statut Secure Boot
+   sbctl status
+
+   # Vérifier les logs VPN
+   journalctl -u strongswan-swanctl -f
+   ```
+
+---
+
+## 9. Fonctionnalités en Développement
 
 Ces fonctionnalités sont planifiées et listées par priorité dans le README officiel.
 
@@ -262,7 +451,7 @@ Support de la rotation des clés Secure Boot avec TPM2 pour garantir la continui
 
 ---
 
-## 8. Dépannage et FAQ
+## 10. Dépannage et FAQ
 
 ### Erreurs de permissions lors de l'édition des secrets
 
@@ -312,7 +501,7 @@ cachix use nix-community
 
 ---
 
-## 9. Matériel Supporté
+## 11. Matériel Supporté
 
 Le dossier `hardware/` contient des profils d'optimisation spécifiques (firmwares, modules noyau, pilotes) pour les modèles suivants :
 
@@ -322,13 +511,14 @@ Le dossier `hardware/` contient des profils d'optimisation spécifiques (firmwar
 | `t14g6` | Lenovo ThinkPad T14 Gen 6 |
 | `e14-g7` | Lenovo ThinkPad E14 Gen 7 |
 | `elitebook645g11` | HP EliteBook 645 G11 |
+| `elitebook850g8` | HP EliteBook 850 G8 |
 | `latitude5340` | Dell Latitude 5340 |
 | `x9-15` | Fujitsu Lifebook U9-15 |
 | `x13-20ug` | Dynabook Portégé X30L-G |
 
 ---
 
-## 10. Liste des Modules
+## 12. Liste des Modules
 
 Le cœur de Sécurix repose sur des modules NixOS spécialisés, organisés selon une politique de "défense en profondeur" inspirée des standards de l'ANSSI.
 
@@ -408,7 +598,13 @@ Gère le nom de la machine, les DNS et définit des règles de pare-feu restrict
 
 **`vpn/`** — Tunnelisation sécurisée.
 
-Met en place les tunnels VPN IPSec/IKEv2 d'entreprise via Strongswan pour les utilisateurs nomades.
+Le module VPN est composite et inclut trois sous-protocoles configurables indépendamment :
+
+| Sous-module | Technologie | Usage |
+|:---|:---|:---|
+| `vpn/ipsec/` | Strongswan IKEv2 | Tunnels IPSec d'entreprise (mode nomade). |
+| `vpn/netbird/` | Netbird (WireGuard-based) | VPN mesh pair-à-pair. |
+| `vpn/wireguard/` | WireGuard | Tunnels légers point-à-point. |
 
 ---
 
@@ -472,7 +668,7 @@ Embarque les utilitaires courants pour les administrateurs et les utilisateurs, 
 
 ---
 
-## 11. Références
+## 13. Références
 
 * [Recommandations ANSSI — Systèmes GNU/Linux](https://cyber.gouv.fr/publications/recommandations-de-securite-relatives-un-systeme-gnulinux)
 * [Recommandations ANSSI — Administration sécurisée des SI](https://cyber.gouv.fr/publications/recommandations-relatives-ladministration-securisee-des-si)
