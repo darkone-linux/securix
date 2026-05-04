@@ -260,10 +260,10 @@ Pour utiliser Sécurix, créez un projet avec la structure suivante :
 mon-projet/
 ├── default.nix      # Point d'entrée qui importe securix
 ├── inventory/       # Inventaire des machines et utilisateurs
-│   ├── machines/   # Configurations des postes
-│   └── users/      # Configurations des utilisateurs
+│   ├── machines/    # Configurations des postes
+│   └── users/       # Configurations des utilisateurs
 ├── vpn-profiles.nix # Profils VPN
-└── npins/          # Dépendances (incluant securix)
+└── npins/           # Dépendances (incluant securix)
 ```
 
 Exemple de `default.nix` consommateur (inspiré de `examples/basic/`) :
